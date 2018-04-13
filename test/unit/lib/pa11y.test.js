@@ -2,12 +2,14 @@
 
 const assert = require('proclaim');
 const mockery = require('mockery');
+const Module = require('module');
 const path = require('path');
 const sinon = require('sinon');
 
 describe('lib/pa11y', () => {
 	let extend;
 	let fs;
+	let htmlCodeSnifferRunner;
 	let htmlCodeSnifferPath;
 	let pa11y;
 	let pa11yResults;
@@ -23,7 +25,11 @@ describe('lib/pa11y', () => {
 			mockResults: true
 		};
 		/* eslint-disable no-underscore-dangle */
-		global._runPa11y = sinon.stub().returns(pa11yResults);
+		global.window = {
+			__pa11y: {
+				run: sinon.stub().returns(pa11yResults)
+			}
+		};
 		/* eslint-enable no-underscore-dangle */
 
 		runAction = require('../mock/action.mock');
@@ -32,7 +38,15 @@ describe('lib/pa11y', () => {
 		extend = sinon.spy(require('node.extend'));
 		mockery.registerMock('node.extend', extend);
 
-		htmlCodeSnifferPath = path.resolve(`${__dirname}/../../../lib/vendor/HTMLCS.js`);
+		htmlCodeSnifferRunner = {
+			scripts: [
+				'/mock/HTMLCS.js'
+			],
+			init: () => 'mock-htmlcs-runner'
+		};
+		mockery.registerMock('./runner/htmlcs', htmlCodeSnifferRunner);
+
+		htmlCodeSnifferPath = '/mock/HTMLCS.js';
 		pa11yRunnerPath = path.resolve(`${__dirname}/../../../lib/runner.js`);
 
 		fs = require('../mock/fs-extra.mock');
@@ -57,7 +71,7 @@ describe('lib/pa11y', () => {
 
 	afterEach(() => {
 		/* eslint-disable no-underscore-dangle */
-		delete global._runPa11y;
+		delete global.window;
 		/* eslint-enable no-underscore-dangle */
 	});
 
@@ -163,7 +177,7 @@ describe('lib/pa11y', () => {
 
 		it('loads the HTML CodeSniffer JavaScript', () => {
 			assert.called(fs.readFile);
-			assert.calledWithExactly(fs.readFile, path.resolve(`${__dirname}/../../../lib/vendor/HTMLCS.js`), 'utf-8');
+			assert.calledWithExactly(fs.readFile, path.resolve(`/mock/HTMLCS.js`), 'utf-8');
 		});
 
 		it('loads the Pa11y runner JavaScript', () => {
@@ -171,9 +185,10 @@ describe('lib/pa11y', () => {
 			assert.calledWithExactly(fs.readFile, path.resolve(`${__dirname}/../../../lib/runner.js`), 'utf-8');
 		});
 
-		it('evaluates the HTML CodeSniffer JavaScript', () => {
+		it('evaluates the HTML CodeSniffer vendor and runner JavaScript', () => {
 			assert.called(puppeteer.mockPage.evaluate);
-			assert.calledWith(puppeteer.mockPage.evaluate, 'mock-html-codesniffer-js');
+			assert.match(puppeteer.mockPage.evaluate.secondCall.args[0], /^\s*;\s*mock-html-codesniffer-js\s*;/);
+			assert.match(puppeteer.mockPage.evaluate.secondCall.args[0], /;\s*window\.__pa11y\.runners\['htmlcs'\] = \(\) => 'mock-htmlcs-runner'\s*;\s*$/);
 		});
 
 		it('evaluates the the Pa11y runner JavaScript', () => {
@@ -192,6 +207,9 @@ describe('lib/pa11y', () => {
 				],
 				rootElement: pa11y.defaults.rootElement,
 				rules: pa11y.defaults.rules,
+				runners: [
+					'htmlcs'
+				],
 				standard: pa11y.defaults.standard,
 				wait: pa11y.defaults.wait
 			});
@@ -208,14 +226,14 @@ describe('lib/pa11y', () => {
 				returnValue = puppeteer.mockPage.evaluate.thirdCall.args[0](options);
 			});
 
-			it('calls `_runPa11y` with the passed in options', () => {
+			it('calls `__pa11y.run` with the passed in options', () => {
 				/* eslint-disable no-underscore-dangle */
-				assert.calledOnce(global._runPa11y);
-				assert.calledWithExactly(global._runPa11y, options);
+				assert.calledOnce(global.window.__pa11y.run);
+				assert.calledWithExactly(global.window.__pa11y.run, options);
 				/* eslint-enable no-underscore-dangle */
 			});
 
-			it('returns the return value of `_runPa11y`', () => {
+			it('returns the return value of `__pa11y.run`', () => {
 				assert.strictEqual(returnValue, pa11yResults);
 			});
 
@@ -720,6 +738,60 @@ describe('lib/pa11y', () => {
 			it('rejects with a descriptive error', () => {
 				assert.instanceOf(rejectedError, Error);
 				assert.strictEqual(rejectedError.message, 'The page option must only be set alongside the browser option');
+			});
+
+		});
+
+		describe('when `options.runners` is set', () => {
+			let mockRunnerLocal;
+			let mockRunnerNodeModule;
+			let mockRunnerPa11yNodeModule;
+
+			beforeEach(async () => {
+				puppeteer.mockPage.evaluate.resetHistory();
+				fs.readFile.resetHistory();
+
+				mockRunnerLocal = {
+					scripts: [
+						'/mock-runner-local/vendor.js'
+					],
+					init: () => 'mock-runner-local'
+				};
+				mockery.registerMock('./runner/local', mockRunnerLocal);
+
+				mockRunnerPa11yNodeModule = {
+					scripts: [
+						'/mock-runner-pa11y-node-module/vendor.js'
+					],
+					init: () => 'mock-runner-pa11y-node-module'
+				};
+				mockery.registerMock('pa11y-runner-pa11y-node-module', mockRunnerPa11yNodeModule);
+
+				mockRunnerNodeModule = {
+					scripts: [
+						'/mock-runner-node-module/vendor.js'
+					],
+					init: () => 'mock-runner-node-module'
+				};
+				mockery.registerMock('node-module', mockRunnerNodeModule);
+
+				fs.readFile.withArgs('/mock-runner-local/vendor.js').resolves('mock-runner-local-js');
+				fs.readFile.withArgs('/mock-runner-pa11y-node-module/vendor.js').resolves('mock-runner-pa11y-node-module-js');
+				fs.readFile.withArgs('/mock-runner-node-module/vendor.js').resolves('mock-runner-node-module-js');
+
+				options.runners = [
+					'local',
+					'pa11y-node-module',
+					'node-module'
+				];
+				await pa11y(options);
+			});
+
+			it('evaluates all vendor script and runner JavaScript', () => {
+				assert.called(puppeteer.mockPage.evaluate);
+				assert.match(puppeteer.mockPage.evaluate.getCall(1).args[0], /^\s*;\s*mock-runner-local-js\s*;\s*;\s*window\.__pa11y\.runners\['local'\] = \(\) => 'mock-runner-local'\s*;\s*$/);
+				assert.match(puppeteer.mockPage.evaluate.getCall(2).args[0], /^\s*;\s*mock-runner-pa11y-node-module-js\s*;\s*;\s*window\.__pa11y\.runners\['pa11y-node-module'\] = \(\) => 'mock-runner-pa11y-node-module'\s*;\s*$/);
+				assert.match(puppeteer.mockPage.evaluate.getCall(3).args[0], /^\s*;\s*mock-runner-node-module-js\s*;\s*;\s*window\.__pa11y\.runners\['node-module'\] = \(\) => 'mock-runner-node-module'\s*;\s*$/);
 			});
 
 		});
